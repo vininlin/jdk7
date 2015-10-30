@@ -33,7 +33,7 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-package concurrent;
+package concurrent.source;
 
 import java.util.Collection;
 import java.util.concurrent.RejectedExecutionException;
@@ -226,6 +226,7 @@ public class ForkJoinWorkerThread extends Thread {
      * of them (usually the most current). Declared non-volatile,
      * relying on other prevailing sync to keep reasonably current.
      */
+    //最近窃取线程的索引
     int stealHint;
 
     /**
@@ -233,6 +234,7 @@ public class ForkJoinWorkerThread extends Thread {
      * running, and accessed directly by pool to locate this worker in
      * its workers array.
      */
+    //worker在线程池中的索引
     final int poolIndex;
 
     /**
@@ -245,6 +247,7 @@ public class ForkJoinWorkerThread extends Thread {
      * Complement of poolIndex, offset by count of entries of task
      * waits. Accessed by ForkJoinPool to manage event waiters.
      */
+    //poolIndex的补充
     volatile int eventCount;
 
     /**
@@ -280,6 +283,7 @@ public class ForkJoinWorkerThread extends Thread {
      * submission queue).  All uses are surrounded by enough volatile
      * reads/writes to maintain as non-volatile.
      */
+    //最近从其它线程窃取的任务
     ForkJoinTask<?> currentSteal;
 
     /**
@@ -287,6 +291,7 @@ public class ForkJoinWorkerThread extends Thread {
      * to help other stealers in helpJoinTask. All uses are surrounded
      * by enough volatile reads/writes to maintain as non-volatile.
      */
+    //当前准备join的任务
     ForkJoinTask<?> currentJoin;
 
     /**
@@ -396,7 +401,9 @@ public class ForkJoinWorkerThread extends Thread {
     public void run() {
         Throwable exception = null;
         try {
+            //初始化
             onStart();
+            //开始工作
             pool.work(this);
         } catch (Throwable ex) {
             exception = ex;
@@ -469,7 +476,8 @@ public class ForkJoinWorkerThread extends Thread {
             UNSAFE.putOrderedObject(q, u, t);
             //递增
             queueTop = s + 1;         // or use putOrderedInt
-            //(s=s-queueBase) <=2，通知线程池唤醒或创建工作线程
+            //(s=s-queueBase) <=2，queueBase要追上queueTop时，通知线程池唤醒或创建工作线程
+            //queueBase要追上queueTop
             if ((s -= queueBase) <= 2)
                 pool.signalWork();
             else if (s == m)
@@ -588,9 +596,11 @@ public class ForkJoinWorkerThread extends Thread {
      * @param t the task. Caller must ensure non-null.
      */
     final boolean unpushTask(ForkJoinTask<?> t) {
+        //任务是不是在队列头
         ForkJoinTask<?>[] q;
         int s;
         if ((q = queue) != null && (s = queueTop) != queueBase &&
+              //把给定的任务对应的引用置nulll,
             UNSAFE.compareAndSwapObject
             (q, (((q.length - 1) & --s) << ASHIFT) + ABASE, t, null)) {
             queueTop = s; // or putOrderedInt
@@ -620,13 +630,16 @@ public class ForkJoinWorkerThread extends Thread {
         currentSteal = t;
         //死循环执行
         for (;;) {
+            //首先执行偷来的任务
             if (t != null)
                 t.doExec();
-            //队列为空
+            //接着执行自己任务队列中的任务，直到队列中没有任务
             if (queueTop == queueBase)
                 break;
+            //根据locallyFifo设置，决定是FIFO方法获取任务还是LIFO方式获取 
             t = locallyFifo ? locallyDeqTask() : popTask();
         }
+        //更新偷任务的计数
         ++stealCount;
         currentSteal = null;
     }
@@ -736,25 +749,31 @@ public class ForkJoinWorkerThread extends Thread {
         //获取当前任务，并把join的任务作为当前任务
         ForkJoinTask<?> prevJoin = currentJoin;
         currentJoin = joinMe;
-        //重试16次
         for (int s, retries = MAX_HELP;;) {
-            //任务状态不为SIGNAL
+            //joinMe任务已经完成或取消、异常，把currentJoin引用重置回去
             if ((s = joinMe.status) < 0) {
                 currentJoin = prevJoin;
                 return s;
             }
             if (retries > 0) {
                 if (queueTop != queueBase) {
-                    //join本地任务
+                    //判断任务是否在自己的worker线程队列的队首
+                    //有则执行
                     if (!localHelpJoinTask(joinMe))
                         retries = 0;           // cannot help
                 }
+                //retries达到8次
                 else if (retries == MAX_HELP >>> 1) {
                     --retries;                 // check uncommon case
+                    //如果要执行的任务在某个worker线程的队尾，则偷过来执行
                     if (tryDeqAndExec(joinMe) >= 0)
+                        //status>0表示任务没执行结束，则让出当前线程控制权
                         Thread.yield();        // for politeness
                 }
                 else
+                    //helpJoinTask方法检查当前任务是不是被某个Worker线程偷走了
+                    //并且是这个线程最新偷走的任务（currentSteal），如果是的话，
+                    //当前线程帮助执行这个任务，这个过程成功则返回true
                     retries = helpJoinTask(joinMe) ? MAX_HELP : retries - 1;
             }
             else {
@@ -803,6 +822,8 @@ public class ForkJoinWorkerThread extends Thread {
      * @param canSteal true if local queue is empty
      * @return true if ran a task
      */
+    //找到偷取当前任务的线程，并从其队列尾部偷取一个任务执行；
+    //如果该worker线程也在等待一个任务完成，则继续递归寻找偷取该任务的线程
     private boolean helpJoinTask(ForkJoinTask<?> joinMe) {
         boolean helped = false;
         int m = pool.scanGuard & SMASK;
@@ -868,6 +889,7 @@ public class ForkJoinWorkerThread extends Thread {
      * @param t the task
      * @return t's status
      */
+    //如果任务在某个worker线程的队列尾，偷过来然后执行它
     private int tryDeqAndExec(ForkJoinTask<?> t) {
         int m = pool.scanGuard & SMASK;
         ForkJoinWorkerThread[] ws = pool.workers;

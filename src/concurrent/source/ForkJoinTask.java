@@ -33,7 +33,7 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-package concurrent;
+package concurrent.source;
 
 import java.io.Serializable;
 import java.util.Collection;
@@ -352,10 +352,10 @@ public abstract class ForkJoinTask<V> implements Future<V>, Serializable {
         if ((t = Thread.currentThread()) instanceof ForkJoinWorkerThread) {
             if ((s = status) < 0)
                 return s;
-            //
+            //任务是不是在队列头
             if ((w = (ForkJoinWorkerThread)t).unpushTask(this)) {
                 try {
-                    //执行任务，由子类实现
+                    //如果当前任务在队列头，直接由当前线程执行，执行任务，由子类实现
                     completed = exec();
                 } catch (Throwable rex) {
                     return setExceptionalCompletion(rex);
@@ -364,9 +364,11 @@ public abstract class ForkJoinTask<V> implements Future<V>, Serializable {
                 if (completed)
                     return setCompletion(NORMAL);
             }
+            //任务不在队列头，调用joinTask
             return w.joinTask(this);
         }
         else
+            //外部线程等待任务结束 的情况 
             return externalAwaitDone();
     }
 
